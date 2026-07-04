@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docker-fire-tracking"
+version = "0.1.0"
+description = "Docker-friendly Fire Tracking pipeline for 5-27 multi-phone recordings"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26",
+  "opencv-python-headless>=4.9",
+  "torch>=2.6",
+  "sam3==0.1.2",
+]
+
+[project.scripts]
+firetrack = "firetrack.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["firetrack*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

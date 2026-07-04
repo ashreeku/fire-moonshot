@@ -1,0 +1,59 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local environment and editor files
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea/
+.vscode/
+
+# FireTrack runtime outputs and local data mounts
+work/
+firetrack-work/
+formatted/
+detections/
+triangulation/
+uploads/
+clicks.json
+uploads_clicks.json
+uploads_calibration.json
+
+# Large local model/checkpoint artifacts
+weights/
+vendor/sam3_assets/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Video/data artifacts generated or staged locally
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.npz
+*.npy
+
+# Logs
+*.log
