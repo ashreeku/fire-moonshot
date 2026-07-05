@@ -2,7 +2,7 @@
 
 Two input modes:
 
-- ``dataset``: the mounted 5-27 recordings at ``/data/raw`` -> full pipeline
+- ``dataset``: uploaded 5-27 recordings + mocap -> full pipeline
   (format -> clicks -> detect -> triangulate) with per-video selection.
 - ``upload``: videos dropped from the browser -> clicks + SAM3 detection, with
   triangulation available when the user supplies camera calibration.
@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import zipfile
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -46,11 +47,19 @@ UPLOAD_CHUNK = 1 << 20
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 DATASET_STAGES = {"format", "detect", "triangulate", "run-all"}
 UPLOAD_STAGES = {"detect", "triangulate"}
+DATASET_FILE_NAMES = {
+    "video.mp4",
+    "metadata.json",
+    "camera.json",
+    "calibration.json",
+    "gps.csv",
+    "imu.csv",
+    "rf_data.jsonl",
+}
 
 
 @dataclass(frozen=True)
 class WebConfig:
-    raw_root: Path
     work_root: Path
 
     @property
@@ -70,6 +79,10 @@ class WebConfig:
         return self.work_root / "clicks.json"
 
     @property
+    def dataset_uploads_root(self) -> Path:
+        return self.work_root / "dataset_uploads"
+
+    @property
     def uploads_root(self) -> Path:
         return self.work_root / "uploads"
 
@@ -86,6 +99,57 @@ def safe_stem(filename: str) -> str:
     stem = Path(filename).name.rsplit(".", 1)[0]
     cleaned = SAFE_NAME.sub("_", stem).strip("._-")
     return cleaned or "upload"
+
+
+def safe_relpath(path: str) -> Path:
+    parts = [SAFE_NAME.sub("_", p).strip("._-") for p in Path(path).parts]
+    clean = [p for p in parts if p and p not in (".", "..")]
+    if not clean:
+        raise ValueError("empty path")
+    return Path(*clean)
+
+
+def dataset_store_rel(upload_path: str, run_hint: str | None = None) -> Path:
+    """Map uploaded 5-27 files into the raw layout expected by format/triangulate.
+
+    The existing 5-27 code expects ``<root>/<run>/<run>/<camera>/video.mp4`` and
+    ``<root>/<run>/<run>/<run>_data_6D.tsv``. Browser directory uploads often
+    provide ``<run>/<camera>/video.mp4``; insert the duplicate run segment when
+    needed while preserving already-compatible uploads.
+    """
+    rel = safe_relpath(upload_path)
+    parts = rel.parts
+    run = run_hint or parts[0]
+    if len(parts) >= 2 and parts[1] == run:
+        return rel
+    if run_hint is not None:
+        tail = Path(*parts[1:]) if len(parts) > 1 else Path(parts[0])
+        return Path(run) / run / tail
+    return Path(run) / run / Path(*parts[1:])
+
+
+def is_dataset_file(path: str) -> bool:
+    name = Path(path).name
+    return (
+        name in DATASET_FILE_NAMES
+        or name.endswith("_data_6D.tsv")
+        or name.endswith("_data.tsv")
+    )
+
+
+def infer_dataset_run(paths: list[str]) -> str | None:
+    """Infer a 5-27 run name from mocap TSV names inside an upload."""
+    for path in paths:
+        name = Path(path).name
+        suffix = "_data_6D.tsv"
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    for path in paths:
+        name = Path(path).name
+        suffix = "_data.tsv"
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return None
 
 
 def _has_detection(cfg: WebConfig, spec: VideoSpec) -> bool:
@@ -130,6 +194,7 @@ def build_status(cfg: WebConfig, runner: JobRunner) -> dict:
         "dataset": dataset,
         "uploads": uploads,
         "outputs": {
+            "dataset_uploads": cfg.dataset_uploads_root.exists(),
             "formatted": cfg.formatted_root.exists(),
             "detections": cfg.detections_root.exists(),
             "triangulation": (cfg.triangulation_root / "summary.json").exists(),
@@ -225,12 +290,12 @@ def _stage_fn(cfg: WebConfig, stage: str, source: str, only: list[str] | None, p
             return _upload_triangulate_fn(cfg)
         return _upload_detect_fn(cfg, only, progress)
     if stage == "format":
-        return lambda: normalize_dataset(cfg.raw_root, cfg.formatted_root, only=only)
+        return lambda: normalize_dataset(cfg.dataset_uploads_root, cfg.formatted_root, only=only)
     if stage == "detect":
         return _dataset_detect_fn(cfg, only, progress)
     if stage == "triangulate":
         return lambda: run_triangulation(
-            raw_root=cfg.raw_root,
+            raw_root=cfg.dataset_uploads_root,
             formatted_root=cfg.formatted_root,
             detections_root=cfg.detections_root,
             out_root=cfg.triangulation_root,
@@ -278,10 +343,10 @@ def _upload_triangulate_fn(cfg: WebConfig):
 
 def _run_all_fn(cfg: WebConfig, only: list[str] | None, progress=None):
     def run() -> None:
-        normalize_dataset(cfg.raw_root, cfg.formatted_root, only=only)
+        normalize_dataset(cfg.dataset_uploads_root, cfg.formatted_root, only=only)
         _dataset_detect_fn(cfg, only, progress)()
         run_triangulation(
-            raw_root=cfg.raw_root,
+            raw_root=cfg.dataset_uploads_root,
             formatted_root=cfg.formatted_root,
             detections_root=cfg.detections_root,
             out_root=cfg.triangulation_root,
@@ -309,9 +374,10 @@ class _ClicksRegistry:
         self.active = service
 
 
-def serve_webui(*, raw_root: Path, work_root: Path, host: str, port: int) -> None:
-    cfg = WebConfig(raw_root.resolve(), work_root.resolve())
+def serve_webui(*, work_root: Path, host: str, port: int) -> None:
+    cfg = WebConfig(work_root.resolve())
     cfg.work_root.mkdir(parents=True, exist_ok=True)
+    cfg.dataset_uploads_root.mkdir(parents=True, exist_ok=True)
     cfg.uploads_root.mkdir(parents=True, exist_ok=True)
     runner = JobRunner()
     clicks = _ClicksRegistry(cfg)
@@ -319,11 +385,14 @@ def serve_webui(*, raw_root: Path, work_root: Path, host: str, port: int) -> Non
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, status: int, ctype: str, payload: bytes) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+            except (BrokenPipeError, ConnectionResetError):
+                return
 
         def _json(self, status: int, obj: object) -> None:
             self._send(status, "application/json", json.dumps(obj).encode())
@@ -478,6 +547,9 @@ def serve_webui(*, raw_root: Path, work_root: Path, host: str, port: int) -> Non
             if route == "/api/upload":
                 self._handle_upload(parse_qs(parsed.query))
                 return
+            if route == "/api/dataset-upload-zip":
+                self._handle_dataset_upload_zip(parse_qs(parsed.query))
+                return
             if route == "/api/calibration":
                 self._handle_calibration()
                 return
@@ -486,6 +558,9 @@ def serve_webui(*, raw_root: Path, work_root: Path, host: str, port: int) -> Non
                 return
             if route == "/api/upload/remove":
                 self._handle_upload_remove(self._read_json())
+                return
+            if route == "/api/dataset/clear":
+                self._handle_dataset_clear()
                 return
             if route == "/api/centroids/edit":
                 self._handle_centroid_edit(self._read_json())
@@ -545,6 +620,55 @@ def serve_webui(*, raw_root: Path, work_root: Path, host: str, port: int) -> Non
                     fh.write(chunk)
                     remaining -= len(chunk)
             self._json(200, {"label": stem})
+
+        def _handle_dataset_upload_zip(self, query: dict) -> None:
+            name = query.get("name", ["dataset.zip"])[0]
+            if not name.lower().endswith(".zip"):
+                self._json(400, {"error": "upload a .zip file"})
+                return
+            remaining = int(self.headers.get("Content-Length", "0"))
+            if remaining <= 0:
+                self._json(400, {"error": "empty upload"})
+                return
+            tmp = cfg.work_root / f".dataset_upload_{safe_stem(name)}.zip"
+            with tmp.open("wb") as fh:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(UPLOAD_CHUNK, remaining))
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    remaining -= len(chunk)
+            extracted = 0
+            try:
+                with zipfile.ZipFile(tmp) as zf:
+                    names = [info.filename for info in zf.infolist()]
+                    run_hint = infer_dataset_run(names)
+                    for info in zf.infolist():
+                        if info.is_dir() or not is_dataset_file(info.filename):
+                            continue
+                        rel = dataset_store_rel(info.filename, run_hint=run_hint)
+                        dest = (cfg.dataset_uploads_root / rel).resolve()
+                        if cfg.dataset_uploads_root.resolve() not in dest.parents:
+                            continue
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(info) as src, dest.open("wb") as out:
+                            shutil.copyfileobj(src, out, length=UPLOAD_CHUNK)
+                        extracted += 1
+            except zipfile.BadZipFile:
+                self._json(400, {"error": "invalid zip file"})
+                return
+            finally:
+                tmp.unlink(missing_ok=True)
+            self._json(200, {"extracted": extracted})
+
+        def _handle_dataset_clear(self) -> None:
+            for root in (cfg.dataset_uploads_root, cfg.formatted_root, cfg.detections_root, cfg.triangulation_root):
+                if root.exists():
+                    shutil.rmtree(root, ignore_errors=True)
+            if cfg.clicks_json.exists():
+                cfg.clicks_json.unlink()
+            cfg.dataset_uploads_root.mkdir(parents=True, exist_ok=True)
+            self._json(200, {"ok": True})
 
         def _handle_calibration(self) -> None:
             length = int(self.headers.get("Content-Length", "0"))
@@ -620,7 +744,7 @@ def serve_webui(*, raw_root: Path, work_root: Path, host: str, port: int) -> Non
 
     server = ThreadingHTTPServer((host, port), Handler)
     print(f"FireTrack dashboard at http://{host}:{port}")
-    print(f"  raw_root={cfg.raw_root}  work_root={cfg.work_root}")
+    print(f"  work_root={cfg.work_root}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -7,6 +7,7 @@ The RTS (Rauch-Tung-Striebel) backward pass uses future observations to
 refine estimates, making this an optimal offline smoother — unlike a
 Gaussian blur which ignores the motion model entirely.
 """
+from __future__ import annotations
 
 import numpy as np
 

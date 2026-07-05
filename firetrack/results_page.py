@@ -105,7 +105,7 @@ async function getResults(){return (await fetch('/api/results')).json();}
 function opt(v,t){const o=document.createElement('option');o.value=v;o.textContent=t;return o;}
 
 /* ---------- Detection 2D ---------- */
-let det={data:null,frame:0,timer:null};
+let det={data:null,frame:0,timer:null,playing:false};
 const dimg=document.getElementById('detframe'),dov=document.getElementById('detoverlay');
 async function loadDet(dir){
  stopDet();
@@ -124,17 +124,22 @@ async function loadDet(dir){
    `<span>frames <b>${m.n_frames}</b></span><span>detected <b>${m.n_detected}</b> (${(100*m.n_detected/m.n_frames||0).toFixed(0)}%)</span><span><b>${m.width}\xc3\x97${m.height}</b></span>`;
  showFrame(0);
 }
-function showFrame(i){
+function showFrame(i,onLoaded){
+ if(!det.data)return;
+ i=Math.max(0,Math.min(parseInt(i)||0,det.data.n_frames-1));
  det.frame=i;
- dimg.onload=drawOverlay;
- dimg.src='/api/result-frame?dir='+encodeURIComponent(det.dir)+'&frame='+i;
+ dimg.dataset.frame=String(i);
+ dimg.onload=()=>{drawOverlay(parseInt(dimg.dataset.frame||'0')); if(onLoaded)onLoaded();};
+ dimg.onerror=()=>{if(onLoaded)onLoaded();};
+ dimg.src='/api/result-frame?dir='+encodeURIComponent(det.dir)+'&frame='+i+'&t='+Date.now();
  document.getElementById('detscrub').value=i;
  document.getElementById('detframenum').innerHTML=`<b>frame ${i}</b> / ${det.data.n_frames-1}`;
 }
-function drawOverlay(){
+function drawOverlay(frameOverride){
  const w=dimg.clientWidth,h=dimg.clientHeight;dov.width=w;dov.height=h;
  const ctx=dov.getContext('2d');ctx.clearRect(0,0,w,h);
- const c=det.data.centroids[det.frame],edited=det.edits&&(det.frame in det.edits);
+ const frame=(frameOverride==null?det.frame:frameOverride);
+ const c=det.data.centroids[frame],edited=det.edits&&(frame in det.edits);
  if(!c||c[0]==null){ctx.fillStyle='#FFC857';ctx.font='12px monospace';
    ctx.fillText(edited?'cleared (edited)':'no detection this frame',10,18);return;}
  const sx=w/det.data.width,sy=h/det.data.height,x=c[0]*sx,y=c[1]*sy;
@@ -168,11 +173,18 @@ dov.addEventListener('click',e=>{
  const x=(e.clientX-r.left)*det.data.width/r.width,y=(e.clientY-r.top)*det.data.height/r.height;
  det.data.centroids[det.frame]=[x,y];det.edits[det.frame]={x,y};drawOverlay();updateEditInfo();
 });
-function stopDet(){if(det.timer){clearInterval(det.timer);det.timer=null;document.getElementById('detplay').textContent='Play';}}
+function stopDet(){det.playing=false;if(det.timer){clearTimeout(det.timer);det.timer=null;}document.getElementById('detplay').textContent='Play';}
+function playDetNext(){
+ if(!det.playing||!det.data){stopDet();return;}
+ const n=det.frame+1;
+ if(n>=det.data.n_frames){stopDet();return;}
+ showFrame(n,()=>{if(det.playing)det.timer=setTimeout(playDetNext,80);});
+}
 document.getElementById('detplay').onclick=()=>{
- if(det.timer){stopDet();return;}
+ if(det.playing){stopDet();return;}
+ det.playing=true;
  document.getElementById('detplay').textContent='Pause';
- det.timer=setInterval(()=>{let n=det.frame+1;if(n>=det.data.n_frames){stopDet();return;}showFrame(n);},100);
+ playDetNext();
 };
 document.getElementById('detscrub').oninput=e=>{stopDet();showFrame(parseInt(e.target.value));};
 window.addEventListener('resize',()=>{if(det.data)drawOverlay();});
@@ -217,6 +229,7 @@ function drawScene(){
  for(const p of raw){if(p&&p[0]!=null){const s=project(p);ctx.fillRect(s[0]-1,s[1]-1,2,2);}}
  if(tri.data.gt)poly(ctx,tri.data.gt,'#46D17F',[5,4]);
  poly(ctx,tri.data.smooth,'#36C5D9');
+ tri.marker=Math.max(0,Math.min(tri.marker,tri.data.smooth.length-1));
  const m=tri.data.smooth[tri.marker]||tri.data.raw[tri.marker];
  if(m&&m[0]!=null){const s=project(m);ctx.fillStyle='#FF6A2B';ctx.beginPath();ctx.arc(s[0],s[1],5,0,7);ctx.fill();}
 }
@@ -238,10 +251,10 @@ function stopTri(){if(tri.timer){clearInterval(tri.timer);tri.timer=null;documen
 document.getElementById('triplay').onclick=()=>{
  if(tri.timer){stopTri();return;}
  document.getElementById('triplay').textContent='Pause';
- tri.timer=setInterval(()=>{tri.marker++;if(tri.marker>=tri.data.smooth.length){stopTri();tri.marker=tri.data.smooth.length-1;}
+ tri.timer=setInterval(()=>{if(!tri.data){stopTri();return;}tri.marker++;if(tri.marker>=tri.data.smooth.length){tri.marker=tri.data.smooth.length-1;stopTri();}
    document.getElementById('triscrub').value=tri.marker;drawScene();},60);
 };
-document.getElementById('triscrub').oninput=e=>{stopTri();tri.marker=parseInt(e.target.value);drawScene();};
+document.getElementById('triscrub').oninput=e=>{stopTri();tri.marker=parseInt(e.target.value)||0;drawScene();};
 let drag=null;
 cv.addEventListener('pointerdown',e=>{drag=[e.clientX,e.clientY];cv.setPointerCapture(e.pointerId);});
 cv.addEventListener('pointermove',e=>{if(!drag)return;tri.yaw+=(e.clientX-drag[0])*0.01;tri.pitch+=(e.clientY-drag[1])*0.01;

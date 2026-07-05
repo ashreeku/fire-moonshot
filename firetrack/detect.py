@@ -116,7 +116,9 @@ def load_clicks(clicks_json: Path) -> dict[str, tuple[float, float, int]]:
 def build_predictor():
     from sam3.model_builder import build_sam3_video_predictor
 
-    return build_sam3_video_predictor()
+    bpe_path = Path(__file__).resolve().parents[1] / "vendor" / "sam3_assets" / "bpe_simple_vocab_16e6.txt.gz"
+    kwargs = {"bpe_path": str(bpe_path)} if bpe_path.exists() else {}
+    return build_sam3_video_predictor(**kwargs)
 
 
 def extract_mask(outputs: dict, *, use_click: bool) -> np.ndarray | None:

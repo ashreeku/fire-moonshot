@@ -35,13 +35,13 @@ formatted/
 detections/
 triangulation/
 uploads/
+dataset_uploads/
 clicks.json
 uploads_clicks.json
 uploads_calibration.json
 
 # Large local model/checkpoint artifacts
 weights/
-vendor/sam3_assets/
 *.pt
 *.pth
 *.ckpt

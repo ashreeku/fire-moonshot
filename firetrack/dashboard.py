@@ -226,12 +226,19 @@ button.danger:hover:not(:disabled){border-color:var(--ember);background:rgba(255
 <div class="grid">
   <main class="card">
     <div class="hd"><div class="tabs">
-      <div class="tab active" id="tab-dataset" onclick="setMode('dataset')">Mounted dataset<span class="sub">full pipeline \xc2\xb7 incl. 3D</span></div>
+      <div class="tab active" id="tab-dataset" onclick="setMode('dataset')">5-27 dataset<span class="sub">upload files \xc2\xb7 mocap 3D</span></div>
       <div class="tab" id="tab-upload" onclick="setMode('upload')">Upload clips<span class="sub">detect + calibrated 3D</span></div>
     </div></div>
     <div class="bd">
 
       <div id="mode-dataset">
+        <p class="hint" style="margin:0 0 12px">Upload a 5-27 run zip containing camera folders plus the 6D mocap TSV. The app extracts it under <code>/work/dataset_uploads</code> and prepares it for the 5-27 pipeline.</p>
+        <div class="actions">
+          <button onclick="document.getElementById('dataset-zip').click()" data-keep>@FMT Upload zip</button>
+          <button class="danger" onclick="clearDataset()" data-keep>Clear dataset</button>
+        </div>
+        <input type="file" id="dataset-zip" accept=".zip,application/zip" class="hidden">
+        <div id="ds-progress"></div>
         <div class="actions">
           <button onclick="run('format')" data-st="format">@FMT Format</button>
           <button onclick="annotate('dataset')" data-keep>@CLK Annotate</button>
@@ -239,7 +246,7 @@ button.danger:hover:not(:disabled){border-color:var(--ember);background:rgba(255
           <button onclick="run('triangulate')" data-st="triangulate">@TRI Triangulate</button>
           <button class="primary" onclick="run('run-all')" data-st="run-all">@RUN Run all</button>
         </div>
-        <p class="hint">Reads recordings from <code>/data/raw</code>. Leave everything unchecked to process every clip.</p>
+        <p class="hint">Leave all clips unchecked to process every formatted camera.</p>
         <div class="listhd"><span>Camera clips</span><label style="text-transform:none;letter-spacing:0;cursor:pointer"><input type="checkbox" id="ds-all" onchange="toggleAll('dataset')"> select all</label></div>
         <div id="ds-list"></div>
       </div>
@@ -302,10 +309,10 @@ button.danger:hover:not(:disabled){border-color:var(--ember);background:rgba(255
     <div class="aside-sec">
       <p class="aside-h">Getting started</p>
       <ol class="steps">
-        <li><b>Pick a source.</b> Use the mounted dataset for the full pipeline, or upload clips for quick 2D tracking.</li>
+        <li><b>Pick a source.</b> Upload a 5-27 run for mocap-backed 3D, or upload arbitrary clips for calibrated 3D.</li>
         <li><b>Annotate.</b> Click the drone once per clip so SAM3 knows what to follow. Optional &mdash; skip it to use the text prompt.</li>
         <li><b>Detect.</b> SAM3 tracks the drone frame-by-frame and saves 2D centroid tracks.</li>
-        <li><b>Triangulate</b> <small>(dataset only)</small> fuses the camera tracks into one 3D flight path against mocap.</li>
+        <li><b>Triangulate.</b> 5-27 mode fuses tracks against mocap; clip mode uses your supplied camera poses.</li>
       </ol>
     </div>
     <div class="aside-sec">
@@ -320,6 +327,7 @@ button.danger:hover:not(:disabled){border-color:var(--ember);background:rgba(255
     <div class="aside-sec">
       <p class="aside-h">Outputs</p>
       <div class="kv"><span>formatted</span><b>/work/formatted</b></div>
+      <div class="kv"><span>5-27 uploads</span><b>/work/dataset_uploads</b></div>
       <div class="kv"><span>2D tracks</span><b>/work/detections</b></div>
       <div class="kv"><span>3D trajectory</span><b>/work/triangulation</b></div>
       <div class="kv"><span>clicks</span><b id="kv-clicks">/work/clicks.json</b></div>
@@ -374,18 +382,18 @@ function stageState(s,id){
  if(j.status==='running'){ if(jstage===id) return 'active';
    if(jstage==='run-all'&&id!=='clicks') return 'active'; }
  if(id==='format') return (s.outputs.formatted&&s.dataset.length)?'done':'idle';
- if(id==='clicks'){const c=s.clicks; if(c&&c.clicked>0) return c.pending?'partial':'done'; return 'idle';}
- if(id==='detect'){const all=s.dataset.concat(s.uploads);const tot=all.length;
+ if(id==='clicks'){const c=mode==='upload'?s.uploads_clicks:s.clicks; if(c&&c.clicked>0) return c.pending?'partial':'done'; return 'idle';}
+ if(id==='detect'){const all=mode==='upload'?s.uploads:s.dataset;const tot=all.length;
    const done=all.filter(v=>v.has_detection).length;
    if(!tot)return 'idle'; return done>=tot?'done':(done?'partial':'idle');}
- if(id==='triangulate') return (s.outputs.triangulation||s.outputs.uploads_triangulation)?'done':'idle';
+ if(id==='triangulate') return (mode==='upload'?s.outputs.uploads_triangulation:s.outputs.triangulation)?'done':'idle';
  return 'idle';}
 function stageMetric(s,id){
  if(id==='format') return s.dataset.length?s.dataset.length+' clips':'';
- if(id==='clicks'){const c=s.clicks||s.uploads_clicks; return c?c.clicked+'/'+c.total:'';}
- if(id==='detect'){const all=s.dataset.concat(s.uploads);
+ if(id==='clicks'){const c=mode==='upload'?s.uploads_clicks:s.clicks; return c?c.clicked+'/'+c.total:'';}
+ if(id==='detect'){const all=mode==='upload'?s.uploads:s.dataset;
    return all.length?all.filter(v=>v.has_detection).length+'/'+all.length:'';}
- if(id==='triangulate'){ if(s.outputs.uploads_triangulation)return 'solved (upload)'; return s.outputs.triangulation?'solved':''; }
+ if(id==='triangulate'){ if(mode==='upload')return s.outputs.uploads_triangulation?'solved':''; return s.outputs.triangulation?'solved':''; }
  return '';}
 const LABELS={idle:'Idle',active:'Running',partial:'Partial',done:'Complete'};
 function renderStages(s){
@@ -433,9 +441,8 @@ async function removeCamera(label){
 async function refresh(){
  let s; try{ s=await(await fetch('/api/status')).json(); }catch(e){ return; }
  renderChips(s); renderStages(s);
- renderList('ds-list','dataset',s.dataset,'No clips at /data/raw','Mount your 5-27 recordings, or switch to Upload clips.');
+ renderList('ds-list','dataset',s.dataset,'No formatted clips yet','Upload a 5-27 run zip, then run Format.');
  renderCards(s.uploads,(s.calibration||{}).cameras||[]);
- const ck=s.clicks?` \\u00b7 clicks ${s.clicks.clicked}/${s.clicks.total}`:'';
  const j=s.job,running=j.status==='running';
  document.getElementById('jobchip').innerHTML=j.name?
    `<span class="dot ${running?'run':(j.status==='failed'?'off':'on')}"></span>${j.name} \\u2014 ${j.status}${j.error?' <span class="err">('+j.error+')</span>':''}`:'';
@@ -518,6 +525,28 @@ async function pollLog(){polling=true;
  if(r.status==='running'){setTimeout(pollLog,1000);}else{polling=false;refresh();}
 }
 function flash(msg){const l=document.getElementById('log');l.textContent+='! '+msg+'\\n';l.scrollTop=l.scrollHeight;}
+
+/* 5-27 dataset uploads with progress */
+function uploadDatasetZip(file){return new Promise((res)=>{
+ const id='zip'+Math.abs([...file.name].reduce((a,c)=>a*31+c.charCodeAt(0)|0,13));
+ const box=document.getElementById('ds-progress');
+ box.insertAdjacentHTML('beforeend',`<div style="margin:8px 0"><div style="font-family:var(--mono);font-size:12px;color:var(--muted)">${file.name}</div><div class="prog"><i id="${id}"></i></div></div>`);
+ const x=new XMLHttpRequest();x.open('POST','/api/dataset-upload-zip?name='+encodeURIComponent(file.name));
+ x.upload.onprogress=e=>{if(e.lengthComputable)document.getElementById(id).style.width=(100*e.loaded/e.total)+'%';};
+ x.onload=()=>{const bar=document.getElementById(id);bar.style.width='100%';bar.style.background=x.status<300?'var(--green)':'var(--ember)';
+   if(x.status<300){let d={};try{d=JSON.parse(x.responseText||'{}')}catch(_){};flash('Zip extracted: '+(d.extracted||0)+' files. Run Format next.');}
+   else flash('Zip upload failed: '+file.name);res();};
+ x.onerror=()=>{flash('Zip upload failed: '+file.name);res();};x.send(file);});}
+async function clearDataset(){
+ if(!confirm('Clear uploaded 5-27 files and generated dataset outputs?'))return;
+ await fetch('/api/dataset/clear',{method:'POST'});
+ document.getElementById('ds-progress').textContent='';
+ refresh();
+}
+document.getElementById('dataset-zip').addEventListener('change',async e=>{
+ const f=e.target.files[0]; if(!f)return;
+ await uploadDatasetZip(f); e.target.value=''; refresh();
+});
 
 /* uploads with progress */
 function uploadOne(file){return new Promise((res)=>{

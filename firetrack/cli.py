@@ -85,7 +85,6 @@ def _cmd_triangulate(args: argparse.Namespace) -> int:
 
 def _cmd_webui(args: argparse.Namespace) -> int:
     serve_webui(
-        raw_root=args.raw_root,
         work_root=args.work_root,
         host=args.host,
         port=args.port,
@@ -198,7 +197,6 @@ def build_parser() -> argparse.ArgumentParser:
     run_all.set_defaults(func=_cmd_run_all)
 
     webui = subparsers.add_parser("webui", help="Serve the full-pipeline web dashboard.")
-    webui.add_argument("--raw-root", default="/data/raw", type=_path, help="Raw 5-27 dataset root.")
     webui.add_argument("--work-root", default="/work", type=_path, help="Root for formatted/detections/triangulation/uploads.")
     webui.add_argument("--host", default="0.0.0.0", help="Bind host.")
     webui.add_argument("--port", default=8080, type=int, help="Bind port.")

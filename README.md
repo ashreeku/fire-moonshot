@@ -14,25 +14,36 @@ The container exposes one command, `firetrack`, with stages for:
 ## Web Dashboard (recommended)
 
 Starting the container with no arguments launches a browser dashboard on port
-8080 that drives the whole pipeline. The quickest way is the helper script:
+8080 that drives the whole pipeline:
 
 ```bash
-RAW_ROOT=/path/to/5-27 ./run.sh        # then open http://localhost:8080
+docker run --rm -it --gpus all -p 127.0.0.1:8080:8080 \
+  -e HF_HOME=/hf \
+  -v ~/.cache/huggingface:/hf \
+  -v "$PWD/firetrack-work:/work" \
+  firetrack:527
 ```
 
 The dashboard has two modes:
 
-- **Mounted dataset** (`/data/raw`): runs the full pipeline — format -> annotate
-  clicks -> detect -> triangulate — with per-video selection and live logs.
+- **5-27 dataset**: upload a 5-27 run zip from the browser. The app
+  extracts it under `/work/dataset_uploads`, then runs format -> annotate clicks
+  -> detect -> triangulate with live logs. The uploaded run should contain camera
+  folders (`video.mp4`, `camera.json`, `calibration.json`, `metadata.json`, and
+  optional sensor sidecars) plus the 6D mocap TSV.
 - **Upload videos**: drop videos from your computer to run clicks + SAM3
   detection, then triangulate when you provide per-camera calibration and timing.
 
-Equivalent raw `docker run` (the script wraps this):
+For browser access through an SSH tunnel, keep the port bound to localhost as
+shown above and open `http://127.0.0.1:8080` locally.
+
+The non-interactive CLI still supports mounted raw datasets via `--raw-root`;
+the web dashboard no longer requires a `/data/raw` mount.
+
+Equivalent run using a writable checkpoint cache inside `/work`:
 
 ```bash
 docker run --rm -it --gpus all -p 8080:8080 \
-  -e HF_HOME=/hf -e HF_HUB_OFFLINE=1 -v ~/.cache/huggingface:/hf:ro \
-  -v /path/to/5-27:/data/raw:ro \
   -v /path/to/firetrack-work:/work \
   firetrack:527
 ```
@@ -111,7 +122,17 @@ The bundled image is ~10.4 GB (base + weights) and sets `HF_HOME=/opt/hf` +
 
 ## Expected Mounts
 
-Use a read-only mount for raw data and a writable mount for outputs:
+For the web dashboard, only `/work` is required. It stores uploaded datasets,
+uploaded clips, intermediate outputs, and the Hugging Face cache by default:
+
+```bash
+docker run --rm -it --gpus all -p 127.0.0.1:8080:8080 \
+  -v /path/to/firetrack-work:/work \
+  firetrack:527
+```
+
+For non-interactive CLI runs, use a read-only mount for raw data and a writable
+mount for outputs:
 
 ```bash
 docker run --rm --gpus all \
@@ -124,6 +145,18 @@ docker run --rm --gpus all \
 ```
 
 ## Recommended Workflow
+
+### Web dashboard
+
+1. Open `http://127.0.0.1:8080`.
+2. In **5-27 dataset**, upload a run zip.
+3. Run **Format**.
+4. Run **Annotate** and click the drone once per camera.
+5. Run **Detect**.
+6. Run **Triangulate**.
+7. Inspect/download outputs in **Results**.
+
+### CLI mounted dataset
 
 1. Normalize videos:
 

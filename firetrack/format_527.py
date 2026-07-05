@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -40,11 +41,15 @@ def probe(video_path: Path) -> tuple[int, int, int]:
     return n, w, h
 
 
-def build_ffmpeg_cmd(src: Path, dst: Path, steps: int) -> list[str]:
+def ffmpeg_binary() -> str:
+    return os.environ.get("FIRETRACK_FFMPEG") or "ffmpeg"
+
+
+def build_ffmpeg_cmd(src: Path, dst: Path, steps: int, sync_args: list[str]) -> list[str]:
     steps = steps % 4
     vf = ",".join(TRANSPOSE_BY_STEPS[steps]) if steps else "null"
     return [
-        "ffmpeg",
+        ffmpeg_binary(),
         "-y",
         "-loglevel",
         "error",
@@ -54,8 +59,7 @@ def build_ffmpeg_cmd(src: Path, dst: Path, steps: int) -> list[str]:
         "0:v:0",
         "-vf",
         vf,
-        "-vsync",
-        "0",
+        *sync_args,
         "-c:v",
         "libx264",
         "-crf",
@@ -70,6 +74,28 @@ def build_ffmpeg_cmd(src: Path, dst: Path, steps: int) -> list[str]:
     ]
 
 
+def run_ffmpeg_normalize(src: Path, dst: Path, steps: int) -> None:
+    """Normalize with ffmpeg versions that differ on frame-sync flags."""
+    attempts = (
+        ("fps_mode passthrough", ["-fps_mode", "passthrough"]),
+        ("vsync 0", ["-vsync", "0"]),
+        ("default sync", []),
+    )
+    failures: list[tuple[str, str]] = []
+    for label, sync_args in attempts:
+        cmd = build_ffmpeg_cmd(src, dst, steps, sync_args)
+        result = subprocess.run(cmd, text=True, capture_output=True)
+        if result.returncode == 0:
+            return
+        failures.append((label, (result.stderr or result.stdout or "").strip()))
+        dst.unlink(missing_ok=True)
+
+    print("    ffmpeg failed:")
+    for label, err in failures:
+        print(f"    [{label}] {err or 'no ffmpeg output'}")
+    raise subprocess.CalledProcessError(result.returncode, cmd)
+
+
 def normalize_camera(cam: Camera527, out_root: Path, *, overwrite: bool) -> dict:
     steps = ROTATION_STEPS_BY_PHONE[cam.phone]
     clip_dir = out_root / cam.relative_dir
@@ -79,9 +105,8 @@ def normalize_camera(cam: Camera527, out_root: Path, *, overwrite: bool) -> dict
     if dst_video.exists() and not overwrite:
         print(f"  [{cam.label}] skip existing normalized video")
     else:
-        cmd = build_ffmpeg_cmd(cam.video_path, dst_video, steps)
         print(f"  [{cam.label}] normalize -> {dst_video}")
-        subprocess.run(cmd, check=True)
+        run_ffmpeg_normalize(cam.video_path, dst_video, steps)
 
     for name in SIDECARS:
         src = cam.camera_dir / name
