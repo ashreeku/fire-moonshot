@@ -46,6 +46,7 @@ weights/
 *.pth
 *.ckpt
 *.safetensors
+vendor/sam3_assets/*.gz
 
 # Video/data artifacts generated or staged locally
 *.mp4
